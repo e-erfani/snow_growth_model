@@ -1,0 +1,1601 @@
+#!/bin/csh -f
+sed n << 'EOF' >! hh.f
+      PROGRAM SGMSS
+c     Created by David Mitchell
+c     Modified by Ehsan Erfani
+
+c     Modifications: 
+c     - look for 'iterative' to find any change regarding the iteration
+c     that calculates coefficients and dimensions based on Mitchell et
+c     al. (2014) paper (hereafter M14).
+c     - Fall speeds based on Heymsfield & Westbrook(2010) and Mitchel & 
+c     Hymsfield (2005) is implemented.
+c     - Different initialization is used here based on M14 paper. Since
+c     synoptic cirrus cloud is the case now (no more generic snow), m-D
+c     and A-D and V-D coefficients have changed.
+c     - The coefficient between D and Dexp is calculated in an iterative
+c     method for upper 2 levels (100, 99)
+c     - Shape factor is selected to be 0.25 instead of 0.75 [based on
+c     Paul Field paper in 2008]
+c     - coefficients in Re-X relationship (drag terms) are calculated
+c     based on MH05 approach. This way, the drag terms do not change
+c     abruplty and the kinks in transition b/w flow regimes are removed.
+
+
+c     Original notes:
+c     Same as sgm.rept but with different set-up for describing
+c     a cloud 3.5 km deep, between 0 and -23 deg. C, with cloud-top
+c     dBZ = 5.  This program is designed for producing plots for
+c     the ICCP special issue paper.
+
+c     Program was developed for both the USWRP & CSTAR projects.      
+c     This is the most current valid version of the new snow growth
+c     model at this time (17 October 2005). A number of errors 
+c     were found in all SGM versions prior to July 2001,
+c     including those using IWC for input (i.e. the treatment
+c     of ventilation effects). This version is unique in that the
+c     mean size (length D) and number concentration N are predicted
+c     for the size distribution (SD) based on an exponential fit
+c     for D > 200 microns.  This allows the SGM to be initialized
+c     properly from a Dmean-T relationship, and provides a direct
+c     comparison between predicted and observed Dmean and N that 
+c     correspond to exponential size spectra.
+
+c     The supersaturation wrt ice is based on Korolev et al. (2005)
+c     for glaciated conditions (with slight adjustment), which results
+c     in the evolution of size spectra consistent with observations.
+
+c     This program calculates the evolution of ice particle
+c     size spectra with height for horizontally homogeneous
+c     steady-state snowfall conditions. Cloud updraft is currently
+c     ignored (i.e. w = 0). The program is based on the new prognostic
+c     equations for the N(D) number conc. N and the slope parameter S, 
+c     (Mitchell et al. 2006; Atmos. Research) where S is driven by 
+c     supersaturation with respect to ice. Ice crystal nucleation is 
+c     also a function of supersaturation, but is not active here since 
+c     w = 0.
+
+c     The specific design of this program aims at predicting snowfall
+c     rates over mountains (i.e. the Sierra Nevada) when initialized
+c     by radar echos typically 1.5 km above the terrain (approx. 7500 
+c     ft.). An equation relates radar dBZ to IWC, assuming values for
+c     the size distribution parameters 'nu' and slope 'S'. An empirical
+c     relation between temperature T and S is used in conjunction
+c     with this equation to initialize the model.  The user is prompted
+c     to enter (1) altitude of radar echo; (2) corresponding T; 
+c     (3) dBZ value; (4) ice particle shape.
+
+c     Date of last revision: 17 October 2005, and then radar input
+c     code (which was not used in program) removed on 26 April 2007.
+
+      IMPLICIT NONE
+
+      REAL tk(101),si(100),gamma(100),fg(100),nu,p2(100),n0500,
+     x   p(101),ZG(100),RHOA(100),RHOSI(100),rhosw(100),vf(100),
+     x   t1n(100),t2n(100),t3n(100),m10max,m20max,m3max,m4max, 
+     x   w(100),s(100),sd(100),t1s(100),t2s(100),t3s(100),n500(100),
+     x   e(100),dm(100),df(100),dmax(100),p2nu,m1max,m2max,mvent,
+     x   dmxdep(100),c0(100),mw,ls,lv,lnesi,lnesw,rhice(100),
+     x   z(101),mout1,dmean(100),dmdep(100),iwc(100),r(100),rg(100),
+     x   iwcd(100),rgd(100),ng(101),n(101),nxtl(101),nxg(101),numax,
+     x   knucl,mout2,kw2,ki2,dbzw(100),n0,nd1,nd2,d500(100),lnn0,
+     x   ANUM,DENOM,bp,ap,bn,c00,cafac,cc,cl,cnucl,d1,d2,dbz,del0,
+     x   CP,diff,dmax1,dmax10,dmax2,dmax20,dmax4,dtmp,dsidz,gratio,
+     x   dn,dndz,dndzxtl,dnxtl,ds,dsagg,dsdep,dsdz,dsdzx,dsxtl,dz,
+     x   dzz,e1,ESP,ES0,ESI,ESW,EPS,evbc,fv,dout1,dout2,dout3,nofv,
+     x   fv2,fvmax,fvmaxd,g,GASC,gg,RA,ibase,icnt,igo,igo2,mm,ndat,
+     x   PI,PPTNEFF,rhbc,rhmin,rd,re,re2,renum,remax,reratio,
+     x   tkavg,rhoi,rhov,RW,sc,slp,T0,t1nxtl,t1sxtl,t2nxtl,t2sxtl,
+     x   vis,visk,tc,ttop,sdep,vfd,vmax,vnf,vnfxtl,WS,x,xx,k_a(100),
+     x   zbase,zbot,ze,zeconv,ztop,zw,gf,dfxtl,dmaxd,k_a_cal(100),
+     x   GGi(100),LS_g,esi_g,RA_g,fvmax2,sagg,dmax_ag,m_max_ag
+
+      INTEGER I,k,j,jj
+      real*8 db1n,db1f,db1z,dp2nu,dnu,gm0,gm2,i0,i2
+
+c     new variables for HW2010 & MH05 approach
+      REAL mass_mf, area_mf, area_sphere, a_ratio, vMH(100), vHW(100)
+      REAL d_temp, vMH2, vHW2,del,c0_0,t1i,t2i,a1,b1
+
+c     new variables for iterative fall speed
+      REAL beta_N(100),alpha_N(100),D_N(100),gamma_N(100), 
+     x   delta_N(100),a_0,a_1,a_2,aa_0,aa_1,aa_2,beta_Nx(100),
+     x   alpha_Nx(100),delta_Nx(100),gamma_Nx(100),D_Nx(100),
+     x   beta_Z(100),alpha_Z(100),delta_Z(100),gamma_Z(100),
+     x   beta_Zx(100),alpha_Zx(100),delta_Zx(100),gamma_Zx(100),
+     x   D_Zx(100),cctmp,pptmp,aptmp,bptmp,D_Z(100),D_m(100),
+     x   beta_m(100),alpha_m(100),delta_m(100),gamma_m(100),
+     x   beta_mx(100),alpha_mx(100),delta_mx(100),gamma_mx(100),
+     x   D_mx(100),vzd(100),vz(100),b1n,a1n,a1nx,b1nx,b1zx,a1zx,
+     x   b1z,a1z,b1x,a1x,b1f,a1f,ee,ff
+
+c     new variables for iterative initialization
+      REAL D0,beta0_N(6),delta0_N(6),alpha0_N(6),gamma0_N(6), 
+     x    beta0_Nx(6),beta0_m(6),beta0_mx(6),beta0_Z(6),
+     x    beta0_Zx(6),delta0_Nx(6),delta0_m(6),delta0_mx(6),
+     x    delta0_Z(6),delta0_Zx(6),alpha0_Nx(6),alpha0_m(6),
+     x    alpha0_mx(6),alpha0_Z(6),alpha0_Zx(6),gamma0_Nx(6),
+     x    gamma0_m(6),gamma0_mx(6),gamma0_Z(6),gamma0_Zx(6),
+     x    D0_N(6),D0_Nx(6),D0_m(6),D0_mx(6),D0_Z(6),D0_Zx(6)
+
+
+ccccccccccc     new parameters for iterative fall speed
+c   Define constants for m-D 2nd order polynomial fit for m vs. D
+c   for synoptic ice clouds, -40 < T < -10 C.  Curve fit is based
+c   on cgs units.
+      a_0=-6.59802
+      a_1=1.35772
+      a_2=-0.120320
+
+c   constants for A-D polynomial fit
+      aa_0=-2.20919
+      aa_1=1.39612
+      aa_2=-0.0523313
+cccccccccccccc
+
+C     THERMODYNAMIC PARAMETERS (OUTSIDE DO LOOP 2) MAY BE IN MKS UNITS,
+C     WHILE ALL OTHER PARAMETERS ARE IN CGS UNITS.
+      PI=4.0*ATAN(1.0)
+c   Gas Law Constant (J/K mole):
+      GASC=8.314
+c   Gravity constant:
+      g=9.81  ! mks units
+      gg=100.*g   ! cgs units
+c   Gas constant for water (mks):
+      RW=461.9
+c   Gas constant for air (mks):
+      RA=287.0   !J/kg.K
+c   convert from SI to cgs units:
+c   J/kg.K = 10^7 erg / 10^3g . K = 10^4 erg/g.K
+c      RA_g = 10000*RA
+      RA_g = 8.31446E7  !erg/K.mole
+c   Specific heat for air (mks):
+      CP=1005.
+c   Ratio of molec. wt. of water to air:
+      EPS=.6213 
+c   Latent heat of sublimation (J/kg):
+      LS=2.833E6
+      LS_g = LS*1.0E4  ! in cgs units [erg/g]
+c   Latent heat of condensation at 0 deg. C (J/kg):
+      LV=2.500E6
+c   Temperature at triple point of water:
+      T0=273.15 
+c   Water vapor pressure at triple point (kPa):
+      ES0=6.11
+c   Molec. wt. of water in kg/mole:
+      MW=.018 
+c   Prefactor of ice crystal shape factor in dm/dt eqn.:
+      cc=0.75
+c   Ice density in g/cm3:
+      rhoi=0.92
+c   Constants regarding refractive index for water and ice:
+      kw2=0.93
+      ki2=0.176
+c   Define contact angle factor, cafac, for potential correction to m-D 
+c   relations (i.e. c0lg) in Mitchell et al. (1991). Note these m-D 
+c   expressions assumed a perfect hemisphere to estimates mass.
+      cafac=1.00
+c   Define particle sizes used in estimating mean dimension for the
+c   exponential part of the size distribution:
+      d1=.0500  ! cm units
+      d2=.4000
+c   Initialize integers used to limit ventilation coeff.
+      igo=1
+      igo2=1
+
+
+c      write(6,100)
+c 100  format('Enter altitude (m) of lowest radar echo')  ! cloud top?
+c      read *, ztop
+      ztop = 5800
+
+      zbase=2300.  !Define altitude of cloud base (m):
+      zbot=zbase   ! cloud bottom?
+
+c      write(6,101)
+c 101  format('Enter temperature (deg. C) at lowest radar echo')
+c      read *,ttop
+      ttop = -23
+
+      ttop=ttop+273.  ! Convert to deg. K
+      tk(100)=ttop
+
+c      write(6,102)
+c 102  format('Enter dBZ of lowest radar echo')
+c      read *,dbz
+      dbz = -5
+      ze=10.**(dbz/10.)
+c   Convert from mm**6/m**3 to cm**6/m**3:
+      zeconv=ze   ! Ze conventional units of mm*6/m**3
+      ze=1.e-6*ze
+
+c   Define mean relative humidity below cloud base:
+      rhbc=1.00  ! RH = 100%
+
+c   Constants used in Master Eqn. for fallspeeds, Bohm(1989) :
+c     del0=9.06  ! appropriate for water
+c     c00=0.292  ! appropriate for water
+      del0=5.83  ! appropriate for ice
+      c00=0.6    ! appropriate for ice
+
+c   coefficients for MH05 approach
+      del=5.83 ! for ice particles
+      c0_0=0.6   ! for ice particles
+      t1i=(del**2)/4.
+      t2i=(1./t1i)*(1./(c0_0**0.5))
+
+c    Define correction terms for turbulence and aggregation:
+      a1=.0017  ! applied to aggregates
+      b1=0.8    ! applied to aggregates
+
+
+c   Constants for deposition nucleation: Huffman, 1973:
+      cnucl=1.007  ! 1/cm**3
+      knucl=4.5
+
+c   Number of branches assumed in bullet rosette crystal:
+      bn=5.
+c   Number index for height level output for microp.out:
+      ndat=99
+      icnt=0
+C     ASSIGN PRECIPITATION EFFICIENCY 
+      PPTNEFF=1.0 
+
+c     Open a microphysics output file:
+      open(3,file='sgm_iterate.out', status = 'unknown')
+      open(4,file='sgm_iterate.out2', status = 'unknown')
+
+c   Vertical spacing for integrating 100 levels, 99 layers:
+      dzz=(ztop-zbot)/99.  ! m units
+      dz=100.*dzz          ! cm units
+
+c     Initialize height and air density at cloud top.
+      z(100)=ztop 
+      zg(100)=z(100)/1000.  ! convert to km
+      p(100)=1013.*exp(-z(100)/8000.)  ! Option if don't know P apriori
+      rhoa(100)=1.e-3*(108.7*p(100))/(ra*tk(100))  ! => g/cm**3
+
+c   Choose ice particle shape:
+c      write(6,120)
+c 120  format(1x,'Enter crystal shape (1=graupel, 2=dendritic aggregates,
+c     x 3=rimed den. agg., 4=columns, 5= rimed columns, 6=needles, 
+c     x 7=isometric crystals, 8=generic snow, 9=ice spheres)')      
+c      read (5,*) mm 
+      mm=8
+
+c     Select ice crystal habit by initialization of
+c     aggregation efficiency:
+      if(mm.eq.1)then      ! Graupel: Realistic for radar                            
+          e1=0.0   ! Aggregation efficiency
+          cc=0.75  ! Prefactor of ice crystal shape factor in dm/dt eqn.
+      elseif(mm.eq.2)then  ! Aggregates of unrimed dendrites
+c                   (agg. assemblages of thin plates): Realistic for radar                            
+          e1=0.05
+          cc=0.75 
+      elseif(mm.eq.3)then  ! Aggregates of rimed dendrites, Realistic for radar
+          e1=0.03
+          cc=0.75
+      elseif(mm.eq.4)then  ! Columns selected
+          e1=0.01
+          cc=0.75
+      elseif(mm.eq.5)then  ! Rimed columns 
+          e1=0.01
+          cc=0.75
+      elseif(mm.eq.6)then  ! Needles
+          e1=0.05
+          cc=0.75
+      elseif(mm.eq.7)then  ! Short (isometric) columns selected
+          e1=0.0
+          cc=0.75
+      elseif(mm.eq.8)then  ! Generic snow selected (Mitchell et al. '90): Realistic for radar
+          e1=0.07
+c          cc=0.75
+          cc=0.25    !suggested by a more recent study [Paul Field: Capaticance of Snowflakes]
+      elseif(mm.eq.9)then  ! Ice spheres selected
+          e1=0.00
+          cc=0.75
+      endif
+
+c  Estimate size distrib. slope as a funct. of temp. and particle type
+      if(mm.eq.1.or.mm.eq.7.or.mm.eq.9)then
+      dmean(100)=.1031*exp(.05522*(tk(100)-273.))  ! Dmean in cm
+      nu=1.
+      elseif(mm.eq.2)then
+      dmean(100)=.2000*exp(.07731*(tk(100)-273.))  ! Dmean in cm
+      nu=-0.6
+      else
+      dmean(100)=.1031*exp(.05522*(tk(100)-273.))  ! Dmean in cm
+      nu=-0.60
+      endif
+
+
+ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+ccccccccccc     iterative method for calculating the coefficient between D and Dexp      cccccccccccccc
+
+c    Adjust exponential Dmean for superexponential spectra (nu = -0.6):
+      dmean(100)=0.5032*dmean(100)
+      s(100) = (nu+1.)/dmean(100)     !first guess for s(100)
+      slp = 0.5032*s(100)/(nu+1.)     !first guess for slp @ lev=100 
+
+
+      DO jj=1,6
+c      dmean(100) = (nu+1.)/slp
+      dmean(100)=.1031*exp(.05522*(tk(100)-273.))  ! Dmean in cm
+      dmean(100)=((nu+1.)*slp/s(100))*dmean(100)
+      s(100)=(nu+1.)/dmean(100)  ! Size distrib. slope in 1/cm
+      sd(100)=s(100)
+      dmdep(100)=dmean(100)
+
+c	ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+c       cccccccc       initialize dimensions and coefficients by iterative method        cccccccccccccc
+c	ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+
+c   Initial guess for dimensions and then calc. coefficients
+      D0=0.0500   ! reference dimension; cm units
+
+c     median number concentration dimension
+      beta_N(100)  = a_1  + 2.*a_2 *log(D0)	! synoptic cirrus; -40 < T < -10C
+      delta_N(100) = aa_1 + 2.*aa_2*log(D0)
+
+      gamma_N(100)=exp(aa_0+aa_1*log(D0)+
+     x    aa_2*log(D0)**2)/(D0**delta_N(100))
+
+      alpha_N(100)=exp(a_0 + a_1*log(D0) + a_2*
+     x    log(D0)**2)/(D0**beta_N(100))
+
+c    other coefficients
+      beta_Nx(100) = beta_N(100)
+      beta_m(100) = beta_N(100)
+      beta_mx(100) = beta_N(100)
+      beta_Z(100) = beta_N(100)
+      beta_Zx(100) = beta_N(100)
+
+      delta_Nx(100) = delta_N(100)
+      delta_m(100) = delta_N(100)
+      delta_mx(100) = delta_N(100)
+      delta_Z(100) = delta_N(100)
+      delta_Zx(100) = delta_N(100)
+ 
+      alpha_Nx(100) = alpha_N(100)
+      alpha_m(100) = alpha_N(100)
+      alpha_mx(100) = alpha_N(100)
+      alpha_Z(100) = alpha_N(100)
+      alpha_Zx(100) = alpha_N(100)
+
+      gamma_Nx(100) = gamma_N(100) 
+      gamma_m(100) = gamma_N(100) 
+      gamma_mx(100) = gamma_N(100) 
+      gamma_Z(100) = gamma_N(100) 
+      gamma_Zx(100) = gamma_N(100) 
+
+      D_N(100)=(nu+1.)/s(100)
+      D_Nx(100)=(nu+1.)/sd(100)
+      D_m(100)=(beta_m(100)+nu+0.67)/s(100)
+      D_mx(100)=(beta_mx(100)+nu+0.67)/sd(100)
+      D_Z(100)=(2.*beta_Z(100)+nu+0.67)/s(100)
+      D_Zx(100)=(2.*beta_Zx(100)+nu+0.67)/sd(100)
+
+
+c   Do loop for iterative calculation of coefficients and dimensions
+      do k=2,6
+
+      beta_N(100)  = a_1  + 2.*a_2 *log(D_N(100))	! synoptic cirrus; -40 < T < -10C
+      delta_N(100) = aa_1 + 2.*aa_2*log(D_N(100))
+      alpha_N(100)=exp(a_0 + a_1*log(D_N(100)) + a_2*
+     x   log(D_N(100))**2)/(D_N(100)**beta_N(100))
+      gamma_N(100)=exp(aa_0+aa_1*log(D_N(100)) + aa_2
+     x   *log(D_N(100))**2)/(D_N(100)**delta_N(100))
+
+      beta_Nx(100)  = a_1  + 2.*a_2 *log(D_Nx(100))	! synoptic cirrus; -40 < T < -10C
+      delta_Nx(100) = aa_1 + 2.*aa_2*log(D_Nx(100))
+      alpha_Nx(100)=exp(a_0 + a_1*log(D_Nx(100)) + a_2*
+     x   log(D_Nx(100))**2)/(D_Nx(100)**beta_Nx(100))
+      gamma_Nx(100)=exp(aa_0+aa_1*log(D_Nx(100)) + aa_2
+     x   *log(D_Nx(100))**2)/(D_Nx(100)**delta_Nx(100))
+
+      beta_m(100)  = a_1  + 2.*a_2 *log(D_m(100))	! synoptic cirrus; -40 < T < -10C
+      delta_m(100) = aa_1 + 2.*aa_2*log(D_m(100))
+      alpha_m(100)=exp(a_0 + a_1*log(D_m(100)) + a_2*
+     x   log(D_m(100))**2)/(D_m(100)**beta_m(100))
+      gamma_m(100)=exp(aa_0+aa_1*log(D_m(100)) + aa_2
+     x   *log(D_m(100))**2)/(D_m(100)**delta_m(100))
+
+      beta_mx(100)  = a_1  + 2.*a_2 *log(D_mx(100))	! synoptic cirrus; -40 < T < -10C
+      delta_mx(100) = aa_1 + 2.*aa_2*log(D_mx(100))
+      alpha_mx(100)=exp(a_0 + a_1*log(D_mx(100)) + a_2*
+     x   log(D_mx(100))**2)/(D_mx(100)**beta_mx(100))
+      gamma_mx(100)=exp(aa_0+aa_1*log(D_mx(100)) + aa_2
+     x   *log(D_mx(100))**2)/(D_mx(100)**delta_mx(100))
+
+      beta_Z(100)  = a_1  + 2.*a_2 *log(D_Z(100))	! synoptic cirrus; -40 < T < -10C
+      delta_Z(100) = aa_1 + 2.*aa_2*log(D_Z(100))
+      alpha_Z(100)=exp(a_0 + a_1*log(D_Z(100)) + a_2*
+     x   log(D_Z(100))**2)/(D_Z(100)**beta_Z(100))
+      gamma_Z(100)=exp(aa_0+aa_1*log(D_Z(100)) + aa_2
+     x   *log(D_Z(100))**2)/(D_Z(100)**delta_Z(100))
+
+      beta_Zx(100)  = a_1  + 2.*a_2 *log(D_Zx(100))	! synoptic cirrus; -40 < T < -10C
+      delta_Zx(100) = aa_1 + 2.*aa_2*log(D_Zx(100))
+      alpha_Zx(100)=exp(a_0 + a_1*log(D_Zx(100)) + a_2*
+     x   log(D_Zx(100))**2)/(D_Zx(100)**beta_Zx(100))
+      gamma_Zx(100)=exp(aa_0+aa_1*log(D_Zx(100)) + aa_2
+     x   *log(D_Zx(100))**2)/(D_Zx(100)**delta_Zx(100))
+
+      D_N(100)=(nu+1.)/s(100)
+      D_Nx(100)=(nu+1.)/sd(100)
+      D_m(100)=(beta_m(100)+nu+0.67)/s(100)
+      D_mx(100)=(beta_mx(100)+nu+0.67)/sd(100)
+      D_Z(100)=(2.*beta_Z(100)+nu+0.67)/s(100)
+      D_Zx(100)=(2.*beta_Zx(100)+nu+0.67)/sd(100)
+
+c      write(*,206) beta0_N(k), beta0_m(k), beta0_Z(k),
+c     x     delta0_N(k), delta0_m(k), delta0_Z(k),
+c     x     D0_N(k), D0_m(k), D0_Z(k)
+206   format(12(f7.3,2x))
+
+      enddo  ! enddo for k
+
+
+c	cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+c	cccccccccccc       Calc. of IWC (g/cm**3) at lowest radar echo         cccccccccccccccccccc
+
+c  1st define ratio gc/gn, used to convert adjusted operational Z 
+c  (cm**6/m**3) to new Z (cm**(2*p2)/m**3) appropriate for calc. IWC:
+c  Note that gc/gn = Z ratio => operational Z vs. Z for snow. 
+      gratio=((pi**2)*(rhoi**2)*kw2)/(36.*(alpha_m(100)**2)*ki2)
+c  Note gratio units = cm**(2*p2)/cm**6
+
+c   Calc. IWC (g/cm**3) at lowest radar echo:
+      iwc(100)=(alpha_m(100)*gf(beta_m(100)+nu+1.)*gratio*ze*
+     x   (s(100)**beta_m(100)))/gf(2.*beta_m(100)+nu+1.)
+
+      iwc(100)=1.e-6*iwc(100)  ! convert from g/m**3 to g/cm**3
+
+c     Initialize ice particle number concentration (#/cm**3):
+      n(100)=gf(nu+1.)*iwc(100)*s(100)**beta_m(100)/
+     x    (alpha_m(100)*gf(beta_m(100)+nu+1.))
+      nxtl(100)=n(100)
+      ng(100)=1000.*n(100)  ! units => #/liter
+      nxg(100)=ng(100)
+
+c     Initialize the radar reflectivity profile:
+      zw=gf(2.*beta_m(100)+nu+1.)*iwc(100)/
+     x   (alpha_m(100)*gf(beta_m(100)+nu+1.)*
+     x   gratio*(s(100)**beta_m(100)))
+      zw=1.e12*zw  ! convert to conventional units of mm**6/m**3
+      dbzw(100)=10.*log10(zw)
+
+c   Initialize Dmean for exponential part of the size distribution, where D > 500 microns:
+      n0=n(100)*s(100)**(nu+1.)/gf(nu+1.)
+      nd1=(d1**nu)*n0*exp(-(s(100)*d1))
+      nd2=(d2**nu)*n0*exp(-(s(100)*d2))
+      slp=-(log(nd2)-log(nd1))/(d2-d1)
+
+      write(*,*) dmean(100),s(100),slp,n(100),iwc(100),
+     x    (nu+1)*slp/s(100)
+
+
+      ENDDO    ! enddo for jj
+
+      write(*,*)
+
+c   Initialize N for exponential part of the SD, where D > 0.5 mm:
+      d500(100)=1./slp
+      lnn0=log(nd2)+slp*d2
+      n0500=exp(lnn0)
+      n500(100)=1.e3*n0500/slp  ! Given in #/liter
+      n0500 = n0500*1.e3
+ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+c   Initialize fallspeed at cloud top & coeffs. thereof:
+c    Calc. dynamic & kinematic viscosity (cgs):
+      vis=2.48e-6*(tk(100)**.754)
+      visk=vis/rhoa(100)
+
+      do k=1,6
+        if(k.eq.1)then
+        dtmp=D_m(100)
+        c0(100)=alpha_m(100)
+        p2(100)=beta_m(100)
+        ap=gamma_m(100)
+        bp=delta_m(100)
+        elseif(k.eq.2)then
+        dtmp=D_Z(100)            ! m**2 weighted size
+        c0(100)=alpha_Z(100)
+        p2(100)=beta_Z(100)
+        ap=gamma_Z(100)
+        bp=delta_Z(100)
+        elseif(k.eq.3)then
+        dtmp=D_mx(100)
+        c0(100)=alpha_mx(100)
+        p2(100)=beta_mx(100)
+        ap=gamma_mx(100)
+        bp=delta_mx(100)
+        elseif(k.eq.4)then
+        dtmp=D_N(100)
+        c0(100)=alpha_N(100)
+        p2(100)=beta_N(100)
+        ap=gamma_N(100)
+        bp=delta_N(100)
+        elseif(k.eq.5)then
+        dtmp=D_Nx(100)
+        c0(100)=alpha_Nx(100)
+        p2(100)=beta_Nx(100)
+        ap=gamma_Nx(100)
+        bp=delta_Nx(100)
+        elseif(k.eq.6)then
+        dtmp=D_Zx(100)
+        c0(100)=alpha_Zx(100)
+        p2(100)=beta_Zx(100)
+        ap=gamma_Zx(100)
+        bp=delta_Zx(100)
+        endif
+
+c    Calc. Best number (unitless):
+      xx=(2.*c0(100)*gg*rhoa(100)*(dtmp**(p2(100)+2-bp)))/(ap*(vis**2))
+
+c   Mitchel & hymsfield (2005) approach
+c     Calc. the drag terms [X-Re coefficients]  (a0.X^b0 for aggregation correction included):
+      ff=0.5*t2i*(xx**0.5)/
+     x (((1.+t2i*(xx**0.5))**0.5 - 1.)*((1.+t2i*(xx**0.5))**0.5))-
+     x a1*b1*(xx**b1)/(t1i*((1.+t2i*(xx**0.5))**0.5 - 1.)**2.)
+
+      ee=(t1i*(((1.+t2i*(xx**0.5))**0.5 - 1.)**2.)-a1*(xx**b1))/
+     x   (xx**ff) 
+
+c   Calc. prefactor and exponent, a1 & b1, of fallspeed power law (cgs):
+
+          if(k.eq.1)then
+c    fall speed coefficients
+        a1f=ee*visk*((2.*c0(100)*gg)/(rhoa(100)*(visk**2.)*ap))**ff
+        b1f=ff*(p2(100)+2.-bp)-1.
+c    Calc. median mass-flux dimension (cm):
+        df(100)=(p2(100)+nu+b1f+0.67)/s(100)
+
+c    Calc. mass-flux weighted fallspeed (cm/s) for each N(D) mode:
+c      vf(100)=visk*renum/df(100)	! M96 approach
+      vf(100)=a1f*(df(100)**b1f)	! MH05 approach
+        if(mm.eq.6)vf(100)=0.5*vf(100)
+
+
+ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+c     cccccccccc      calc. fall velocity using Heymsfield and westbrook (2010) approach       cccccc
+ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+
+c     calc. mass for the dimension of interest (here, based on median mass-flux dimension)
+      mass_mf = alpha_m(100)*df(100)**beta_m(100)
+
+c     calc. area for the dimension of interest (here, based on median mass-flux dimension)
+      area_mf = gamma_m(100)*df(100)**delta_m(100)
+
+c     calc. area for ice sphere
+      area_sphere = (pi/4)*df(100)**2
+
+c     calc. area ratio for the dimension of interest (here, based on median mass-flux dimension)
+      a_ratio = area_mf/area_sphere
+
+      d_temp = df(100)
+
+c     calc. fall speed based on HW2010 approach
+      call Vcalc(d_temp,area_mf,mass_mf,a_ratio,vMH2,vHW2)
+      
+      vHW(100) = vHW2
+      vMH(100) = vMH2
+
+cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+
+
+        elseif(k.eq.2)then
+c    fall speed coefficients
+      a1z=ee*visk*((2.*c0(100)*gg)/(rhoa(100)*(visk**2.)*ap))**ff
+      b1z=ff*(p2(100)+2.-bp)-1.
+c    Calc. radar reflectivity flux dimension (cm):
+      dmax(100)=(2.*p2(100)+b1z+nu+0.67)/s(100)
+
+        elseif(k.eq.3)then
+c    fall speed coefficients
+      a1x=ee*visk*((2.*c0(100)*gg)/(rhoa(100)*(visk**2.)*ap))**ff
+      b1x=ff*(p2(100)+2.-bp)-1.
+c    Calc. median mass-flux dimension (cm):
+        df(100)=(p2(100)+nu+b1x+0.67)/sd(100)
+
+c        vfd = visk*renum/df(100)
+        vfd = a1x*(df(100)**b1x)	! MH05 approach
+
+        elseif(k.eq.4)then
+      a1n=ee*visk*((2.*c0(100)*gg)/(rhoa(100)*(visk**2.)*ap))**ff
+      b1n=ff*(p2(100)+2.-bp)-1.
+
+        elseif(k.eq.5)then
+      a1nx=ee*visk*((2.*c0(100)*gg)/(rhoa(100)*(visk**2.)*ap))**ff
+      b1nx=ff*(p2(100)+2.-bp)-1.
+
+        elseif(k.eq.6)then
+      a1zx=ee*visk*((2.*c0(100)*gg)/(rhoa(100)*(visk**2.)*ap))**ff
+      b1zx=ff*(p2(100)+2.-bp)-1.
+c    Calc. radar reflectivity flux dimension (cm):
+      dmaxd = (2.*p2(100)+b1zx+nu+0.67)/sd(100)      
+
+        endif
+
+      enddo   ! enddo for k
+
+c      write(*,*) gamma_m(100),beta_m(100),dtmp,xx,ee,ff,df(100)
+c     x    ,b1n,b1f,b1z
+
+
+c     Calc. of moist adiabatic lapse rate and variation of temperature
+c     (deg. K), pressure (mb), air density (g/cm**3) and water vapor
+c     density (g/cm**3) at ice and water saturation with height z (m).
+
+      rhmin=300.
+      DO 15 I=1,99
+      LNESI=LOG(ES0)+(LS/RW)*((1./T0)-(1./TK(101-I)))  !Clausius-Clapeyron eq.
+      ESI=EXP(LNESI) ! kPa
+c     convert vapor pressure wrt ice from SI to cgs:
+c     1 Pa = 1 kg/m.s2 = 10 g/cm.s2 => 1 kPa = 10^4 g/cm.s2
+      esi_g = 1.0E4*ESI
+      RHOSI(101-I)=0.1*ESI/(RW*TK(101-I))
+C     RHOSI IS IN CGS UNITS (G/CM3).
+      LNESW=LOG(ES0)+(LV/RW)*((1./T0)-(1./TK(101-I))) 
+      ESW=EXP(LNESW)
+      RHOSW(101-I)=0.1*ESW/(RW*TK(101-I))
+c      Calc. density of water vapor using empirical expression
+c      for RH wrt ice from Korolev and Isaac (2005), corresponding
+c      to glaciated conditions:
+      tc=tk(101-i)-273.
+      rhice(101-i)=.0195*tc**2.+0.266*tc+100.5 ! exact eqn.
+      rhice(101-i)=rhice(101-i)+2.2            ! adjusted for higher ssat. original value: 2.2
+        if(rhice(101-i).lt.rhmin)then
+        rhmin=rhice(101-i)
+        endif
+      rhice(101-i)=rhmin    ! do not allow ssat to increase for T > -5 C
+      rhov=(rhice(101-i)/100.)*rhosi(101-i)
+c   calc. thermal conductivity of air from Pruppacher book pg. 508
+c     T: degree of celcius, k_a_cal: cal/(cm.sec.celcius)      
+      k_a_cal(100-i) = (5.69+0.017*tc)*1.0E-5
+c     convert to cgs unit, 1 erg = 1 g.cm2.s−2 = 1.0×10−7 J, 1 cal = 4.184 J
+      k_a(100-i) = 4.184*1.0E7*k_a_cal(100-i)   !k_a unit: g.cm.s-3.celcius
+c   Change ESW below cloud to yield vapor density at mean RH:
+      if(z(101-i).lt.zbase)then
+c     evbc=rhbc*esw  ! vapor pressure below cloud
+      evbc=esi       ! vapor pressure below cloud at ice saturation
+      rhov=0.1*evbc/(rw*tk(101-i))  ! vapor density below cloud
+      endif
+
+      if(z(101-i).gt.(zbase-0.5*dzz).and.z(101-i).lt.(zbase+0.5*dzz))
+     x   ibase=101-i
+
+c   Diffusion coeff. for water vapor (cm**2/s):
+      diff=0.185*((tk(101-i)/273.)**1.81)*(1013./p(101-i))
+
+c   Size independent term in unventillated mass growth eqn.:
+c   Ddensity of ice is 0.9167 g/cm3 at 0 °C
+c   Molecular weight of water is 18.016 g/mol
+c   Pruppacher book, pg: 547
+      GGi(101-i)= RA_g*tk(101-i)/(esi_g*diff*18.016) + 
+     x    LS_g*(LS_g*18.016/(RA_g*tk(101-i)) - 1.)/
+     x    (k_a(101-i)*tk(101-i))
+
+c      fg(101-i)=4.*pi*cc*diff*(rhov-rhosi(101-i)) 
+      fg(101-i)=4.*pi*cc*(rhice(101-i)/100.-1.)/GGi(101-i)
+c   Supersaturation fraction wrt ice; deposition nucleation:
+      si(101-i)=(esw-esi)/esi
+      if(si(101-i).lt.0.0)si(101-i)=0.0
+c   Ice nuclei concentration via dep. nucleation (#/cm**3):
+c     n(101-i)=0.2*cnucl*(si(101-i)**knucl) !Huffman '73; Stein & Georgii '82
+
+c   Calc. wet adiabatic lapse rate (gamma) wrt ice:
+      WS=(EPS*ESI)/P(101-I) 
+      ANUM=1.+((LS/RA)*(WS/TK(101-I))) 
+      DENOM=1.+(((EPS*(LS**2))/(CP*RA))*(WS/(TK(101-I)**2))) 
+      GAMMA(101-I)=(G/CP)*(ANUM/DENOM)
+
+c   Calc. cloud level height, temp. (K), pressure (mb) & air density:
+      Z(100-I)=Z(101-I)-DZZ
+      zg(100-i)=z(100-i)/1000.
+      TK(100-I)=TK(101-I)+GAMMA(101-I)*DZZ
+      p(100-i)=1013.*exp(-z(100-i)/8000.)
+      RHOA(100-I)=1.e-3*(108.7*P(100-I))/(RA*TK(100-I)) ! => g/cm**3
+
+c     Calc. of updraft profile:
+        w(101-i)=0.
+
+  15  CONTINUE
+      rhosi(1)=rhosi(2)
+      rhosw(1)=rhosw(2)
+      rhice(1)=rhice(2)
+c     n(1)=n(2)
+      si(1)=si(2)
+      fg(1)=fg(2)
+      w(1)=w(2)
+
+ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+c   Initialize Dmean for 2nd layer from top (lev: 99)
+      s(99) = s(100)   		 !first guess for s(99)
+      slp = 0.5032*s(99)/(nu+1.)	 !first guess for slp @ lev=99     
+
+      DO j=1,6			 !iteration to calculate s(99)
+
+      if(mm.eq.1.or.mm.eq.7)then
+c     dmean(99)=.1031*exp(.05522*(tk(99)-273.))  ! Dmean in cm
+      dmean(99)=dmean(100)
+      elseif(mm.eq.2)then
+      dmean(99)=.2000*exp(.07731*(tk(99)-273.))  ! Dmean in cm
+      dmean(99)=0.5032*dmean(99)
+      else
+      dmean(99)=.1031*exp(.05522*(tk(99)-273.))  ! Dmean in cm
+c      dmean(99)=0.5032*dmean(99)  ! Adjust exponential Dmean for superexponential spectra
+c      dmean(99) = (nu+1.)/slp
+      dmean(99)=((nu+1.)*slp/s(99))*dmean(99)
+      endif
+
+
+      s(99)=(nu+1.)/dmean(99)
+      sd(99)=s(99)
+      dmdep(99)=dmean(99)
+
+
+c    ccccccccccccccccccccccc     iterative method for coefficients of 2nd layer     ccccccccccccccc
+
+c   Initial guess for dimensions and then calc. coefficients
+      D0=D_m(100)   ! reference dimension; cm units
+
+c     median number concentration dimension
+      beta_m(99)  = a_1  + 2.*a_2 *log(D0)	! synoptic cirrus; -40 < T < -10C
+
+      alpha_m(99)=exp(a_0 + a_1*log(D0) + a_2*
+     x    log(D0)**2)/(D0**beta_m(99))
+
+      D_m(99)=(beta_m(99)+nu+0.67)/s(99)
+ 
+
+c   Do loop for iterative calculation of coefficients and dimensions
+      do k=2,6
+
+      beta_m(99)  = a_1  + 2.*a_2 *log(D_m(99))	! synoptic cirrus; -40 < T < -10C
+      alpha_m(99)=exp(a_0 + a_1*log(D_m(99)) + a_2*
+     x   log(D_m(99))**2)/(D_m(99)**beta_m(99))
+
+      D_m(99)=(beta_m(99)+nu+0.67)/s(99)
+
+      enddo  !enddo for k
+
+c	cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+c   Initialize IWC and N for 2nd layer from top:
+c   Calc. IWC (g/cm**3) at lowest radar echo:
+      gratio=((pi**2)*(rhoi**2)*kw2)/(36.*(alpha_m(99)**2)*ki2)! units = cm**(2*p2)/cm**6
+
+      iwc(99)=(alpha_m(99)*gf(beta_m(99)+nu+1.)*gratio*ze
+     x   *(s(99)**beta_m(99)))/gf(2.*beta_m(99)+nu+1.)
+
+      iwc(99)=1.e-6*iwc(99)  ! convert from g/m**3 to g/cm**3
+
+c     Initialize ice particle number concentration (#/cm**3):
+      n(99)=gf(nu+1.)*iwc(99)*s(99)**beta_m(99)/
+     x    (alpha_m(99)*gf(beta_m(99)+nu+1.))
+      ng(99)=1000.*n(99)  ! units => #/liter
+      nxg(99)=ng(99)
+      nxtl(99)=n(99)
+
+      n0=n(99)*s(99)**(nu+1.)/gf(nu+1.)
+      nd1=(d1**nu)*n0*exp(-(s(99)*d1))
+      nd2=(d2**nu)*n0*exp(-(s(99)*d2))
+      slp=-(log(nd2)-log(nd1))/(d2-d1)
+
+      write(*,*) dmean(99),s(99),slp,n(99),iwc(99),(nu+1)*slp/s(99)
+
+      ENDDO    ! enddo for j
+
+
+c   **************************************************************
+c   Initialize snowfall rate:
+c   [r => g/(s cm**2); rg = mm/h].
+c     r(100)=a1*p2(100)*gf(p2(100)+b1f+nu+1.)*n(100)/
+c    x   (gf(nu+1.)*(s(100)**(p2(100)+b1f)))
+      r(100)=vf(100)*iwc(100)
+      rg(100)=r(100)/2.7777e-5   ! units = mm/h
+      iwcd(100)=iwc(100)   ! iwcd => no aggregation
+      rgd(100)=rg(100)     ! rgd => no aggregation
+
+c  ***************************************
+c     Sticking probabilities below refer to temperatures > -20 C,
+c     and the habits, from top to bottom, of sector plates, dendrites,
+c     sector plates, columns, needles, and plates.
+c     E2=0.40, E3=1.00, E4=0.40, E5=0.10, E6=0.60, E7=0.10 
+c     Note: E1 defined previously for habit of interest.
+      E(100)=E1 
+
+c******************************************************************
+c     Write initial conditions to file sgm.out:
+        mout1=1.e6*iwc(100) ! Output in g/m3
+        mout2=1.e6*iwcd(100) ! Output in g/m3
+        dout1=1.e4*dmean(100) ! Output in microns
+        dout2=1.e4*dmdep(100) ! Output in microns
+        dout3=1.e4*d500(100)
+        tc=tk(100)-273.
+        write(3,105)z(100),mout1,dout1,dout2,ng(100),nxg(100),vf(100),
+     x   vHW(100),vMH(100),vfd,rg(100),rgd(100),rhice(100),tc,dbzw(100)
+     x   ,mout2,s(100)       
+
+        write(4,106)z(100),mout1,dout1,dout2,dout3,ng(100),
+     x   nxg(100),n500(100),rhice(100),tc,dbzw(100),s(100),slp,
+     x   alpha_m(100),beta_m(100),D_m(100),D_N(100),D_Z(100),n0500,
+     x   gamma(100),delta_m(100)
+
+ 105  format(1x,f7.1,2x,f8.5,1x,f10.2,1x,f10.2,1x,f10.6,1x,f9.5,1x,
+     x   4(f9.4,2x),2(f9.5,2x),f8.4,2x,f8.4,2x,f7.4,2x,f9.6,f9.6)
+
+ 106  format(1x,f9.3,2x,f9.6,1x,3(f9.3,2x),3(f9.4,2x),13(f10.6,2x))
+
+      write(*,110) z(100),I0,I2,t3s(100),ee,ff,s(100),
+     x    beta_Z(100),beta_N(100), alpha_m(100),
+     x    beta_m(100),b1z,b1n,b1f,b1zx,b1nx
+
+
+ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+c     Beginning of DO LOOP which predicts evolution of size spectra
+c     from cloud top to cloud base.
+      DO 2 I=1,99 
+c     if(b1f.le.0.0)b1f=0.0001
+c     if(b1n.le.0.0)b1n=0.0001
+c     if(b1z.le.0.0)b1z=0.0001
+c     if(b1zx.le.0.0)b1zx=0.0001
+c     if(b1x.le.0.0)b1x=0.0001
+
+cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+cccccccccccccccccccc	      calc. coefficients for iterative fall speed           cccccccccccccccccc
+
+c     cccccccccccccc        number concentration weighted dimension                 ccccccccccccccc
+
+c     calc. beta & delta: Mitchell et al. 2014, eq. 5
+      beta_N(100-i)  = a_1  + 2.*a_2 *log(D_N(101-i))	! synoptic cirrus; -40 < T < -10C
+      delta_N(100-i) = aa_1 + 2.*aa_2*log(D_N(101-i))
+
+c     calc. alpha & gamma: Mitchell et al. 2014, eq. 6
+      alpha_N(100-i)=exp(a_0 + a_1*log(D_N(101-i)) + a_2*
+     x   log(D_N(101-i))**2)/(D_N(101-i)**beta_N(100-i))
+
+      gamma_N(100-i)=exp(aa_0+aa_1*log(D_N(101-i)) + aa_2
+     x   *log(D_N(101-i))**2)/(D_N(101-i)**delta_N(100-i))
+
+
+c     cccccccccccc      cofficients for no aggregation
+c     calc. beta & delta: Mitchell et al. 2014, eq. 5
+      beta_Nx(100-i)  = a_1  + 2.*a_2 *log(D_Nx(101-i))	! synoptic cirrus; -40 < T < -10C
+      delta_Nx(100-i) = aa_1 + 2.*aa_2*log(D_Nx(101-i))
+
+      alpha_Nx(100-i)=exp(a_0 + a_1*log(D_Nx(101-i)) + a_2*
+     x   log(D_Nx(101-i))**2)/(D_Nx(101-i)**beta_Nx(100-i))
+
+      gamma_Nx(100-i)=exp(aa_0+aa_1*log(D_Nx(101-i)) + aa_2
+     x   *log(D_Nx(101-i))**2)/(D_Nx(101-i)**delta_Nx(100-i))
+
+
+c     cccccccccccccc               mass weighted dimension                   ccccccccccccccc
+
+c     calc. beta & delta: Mitchell et al. 2014, eq. 5
+      beta_m(100-i)  = a_1  + 2.*a_2 *log(D_m(101-i))	! synoptic cirrus; -40 < T < -10C
+      delta_m(100-i) = aa_1 + 2.*aa_2*log(D_m(101-i))
+
+      alpha_m(100-i)=exp(a_0 + a_1*log(D_m(101-i)) + a_2*
+     x   log(D_m(101-i))**2)/(D_m(101-i)**beta_m(100-i))
+
+      gamma_m(100-i)=exp(aa_0+aa_1*log(D_m(101-i)) + aa_2
+     x   *log(D_m(101-i))**2)/(D_m(101-i)**delta_m(100-i))
+
+
+c     cccccccccccc      cofficients for no aggregation
+c     calc. beta & delta: Mitchell et al. 2014, eq. 5
+      beta_mx(100-i)  = a_1  + 2.*a_2 *log(D_mx(101-i))	! synoptic cirrus; -40 < T < -10C
+      delta_mx(100-i) = aa_1 + 2.*aa_2*log(D_mx(101-i))
+
+      alpha_mx(100-i)=exp(a_0 + a_1*log(D_mx(101-i)) + a_2*
+     x   log(D_mx(101-i))**2)/(D_mx(101-i)**beta_mx(100-i))
+
+      gamma_mx(100-i)=exp(aa_0+aa_1*log(D_mx(101-i)) + aa_2
+     x   *log(D_mx(101-i))**2)/(D_mx(101-i)**delta_mx(100-i))
+
+
+c     cccccccccccccc        radar reflectivity weighted dimension                 ccccccccccccccc
+
+c     calc. beta & delta: Mitchell et al. 2014, eq. 5
+      beta_Z(100-i)  = a_1  + 2.*a_2 *log(D_Z(101-i))	! synoptic cirrus; -40 < T < -10C
+      delta_Z(100-i) = aa_1 + 2.*aa_2*log(D_Z(101-i))
+
+      alpha_Z(100-i)=exp(a_0 + a_1*log(D_Z(101-i)) + a_2*
+     x   log(D_Z(101-i))**2)/(D_Z(101-i)**beta_Z(100-i))
+
+      gamma_Z(100-i)=exp(aa_0+aa_1*log(D_Z(101-i)) + aa_2
+     x   *log(D_Z(101-i))**2)/(D_Z(101-i)**delta_Z(100-i))
+
+
+c     cccccccccccc      cofficients for no aggregation
+c     calc. beta & delta: Mitchell et al. 2014, eq. 5
+      beta_Zx(100-i)  = a_1  + 2.*a_2 *log(D_Zx(101-i))	! synoptic cirrus; -40 < T < -10C
+      delta_Zx(100-i) = aa_1 + 2.*aa_2*log(D_Zx(101-i))
+
+      alpha_Zx(100-i)=exp(a_0 + a_1*log(D_Zx(101-i)) + a_2*
+     x   log(D_Zx(101-i))**2)/(D_Zx(101-i)**beta_Zx(100-i))
+
+      gamma_Zx(100-i)=exp(aa_0+aa_1*log(D_Zx(101-i)) + aa_2
+     x   *log(D_Zx(101-i))**2)/(D_Zx(101-i)**delta_Zx(100-i))
+ 
+                                                           
+cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+
+      gm0=2.*gf(2.*nu+b1n+4.)/(2.**(2.*nu+b1n+4.))
+c      gm0=2.*gf(2.*nu+b1f+4.)/(2.**(2.*nu+b1f+4.))
+      p2nu=beta_Z(101-i)+nu 
+      dp2nu=p2nu  ! double precision for hypergeometric subroutine
+      gm2=2.*gf(2.*p2nu+b1z+4.)/(2.**(2.*p2nu+b1z+4.))
+      dnu=nu      ! double precision for hypergeometric subroutine
+      db1n=b1n
+      db1f=b1f
+      db1z=b1z
+c     Calculation of aggregation integral solved by Gauss'
+c     Hypergeometric function.
+      call int(dnu,db1n,gm0,I0)    ! for 0th moment
+c      call int(dnu,db1f,gm0,I0)    ! for 0th moment
+      call int(dp2nu,db1z,gm2,I2)  ! for 2nd moment
+      if(I0.lt.0.0)I0=0.0
+      if(I2.lt.0.0)I2=0.0
+
+c     Calculation of snow growth terms in number conc. equation.
+c     Note: t1n = vertical fallout term, t2n = nucleation term,
+c     t3n = aggregation term.
+c       Number flux fallspeed (cm/s):
+      vnf=a1n*gf(b1n+nu+1.)/(gf(nu+1.)*(s(101-i)**b1n))
+c     vnf=a1f*gf(b1f+nu+1.)/(gf(nu+1.)*(s(101-i)**b1f))
+      vnfxtl=a1x*gf(b1x+nu+1.)/(gf(nu+1.)*(sd(101-i)**b1x))
+c       Change in ice supersat. per cloud level (cgs units):
+c       (Assumes + upwards sign convention since ice embryos are
+c        carried in the updraft)
+      dsidz=(si(101-i)-si(100-i))/dz
+c       Change in N(D) slope per cloud level:
+      if(i.eq.1)then
+      dsdz=(s(100-i)-s(101-i))/dz
+      dsdzx=(sd(100-i)-sd(101-i))/dz
+      else
+      dsdz=(s(101-i)-s(102-i))/dz
+      dsdzx=(sd(101-i)-sd(102-i))/dz
+      endif
+
+
+      t1n(100-i)=(b1n*n(101-i)/s(101-i))*dsdz
+c      t1n(100-i)=(b1f*n(101-i)/s(101-i))*dsdz
+
+      t2n(100-i)=((s(101-i)**b1n)*gf(nu+1.)/(a1n*gf(b1n+nu+1.)))*
+     x   w(101-i)*knucl*cnucl*(si(101-i)**(knucl-1.))*dsidz
+      if(t2n(100-i).lt.0.0)t2n(100-i)=0.
+
+      t3n(100-i)=pi*e(101-i)*I0*(n(101-i)**2)/
+     x   (8.*gf(b1n+nu+1.)*gf(nu+1.)*(s(101-i)**2))
+c      t3n(100-i)=pi*e(101-i)*I0*(n(101-i)**2)/
+c     x   (8.*gf(b1f+nu+1.)*gf(nu+1.)*(s(101-i)**2))
+
+
+c       Ditto but for no aggregation:
+
+      t1nxtl=(b1nx*nxtl(101-i)/sd(101-i))*dsdzx
+c      t1nxtl=(b1x*nxtl(101-i)/sd(101-i))*dsdzx
+
+      t2nxtl=((sd(101-i)**b1nx)*gf(nu+1.)/(a1nx*gf(b1nx+nu+1.)))*
+     x   w(101-i)*knucl*cnucl*(si(101-i)**(knucl-1.))*dsidz
+      if(t2nxtl.lt.0.0)t2nxtl=0.
+
+c   Calc. of number conc. N (#/cm**3) & the individual
+c   ice crystal conc., Nxtl (#/cm**3):
+      dn=(t1n(100-i)+t2n(100-i)-t3n(100-i))*dz
+      n(100-i)=n(101-i)+dn
+      dnxtl=(t1nxtl+t2nxtl)*dz
+      nxtl(100-i)=nxtl(101-i)+dnxtl
+
+c       Change in number conc. (N) per cloud level (1/cm**4):
+      dndz=(n(100-i)-n(101-i))/dz
+      dndzxtl=(nxtl(100-i)-nxtl(101-i))/dz
+
+c     Calculation of snow growth terms in slope equation.
+c     Note: t1s = influence of N on slope, t2s = vapor deposition
+c     term, t3s = aggregation term.
+
+c     Note: assumes w = 0.
+
+      t1s(100-i)=dndz*s(101-i)/((2.*beta_Z(101-i)+b1z)*n(101-i))
+
+      t2s(100-i)=fg(101-i)*(s(101-i)**(beta_Z(101-i)+b1z))*
+     x   2.*gf(beta_Z(101-i)+nu+2.)/(alpha_Z(101-i)*a1z*
+     x   (2.*beta_Z(101-i)+b1z)*gf(2.*beta_Z(101-i)+b1z+nu+1.))
+
+      t3s(100-i)=pi*e(101-i)*I2*n(101-i)/(4.*(2.*beta_Z(101-i)+
+     x   b1z)*gf(2.*beta_Z(101-i)+b1z+nu+1.)*gf(nu+1.)*s(101-i))
+
+
+c      Ditto but without aggregation:
+
+      t1sxtl=dndzxtl*sd(101-i)/((2.*beta_Zx(101-i)+b1zx)*nxtl(101-i))
+
+      t2sxtl=fg(101-i)*(sd(101-i)**(beta_Z(101-i)+b1zx))*
+     x   2.*gf(beta_Zx(101-i)+nu+2.)/(alpha_Zx(101-i)*a1zx*
+     x   (2.*beta_Zx(101-i)+b1zx)*gf(2.*beta_Zx(101-i)+b1zx+nu+1.))
+
+c    **************************************************************
+c   Calc. unventillated slope changes with and without aggregation:
+
+      dsxtl=(t1sxtl-t2sxtl)*dz
+      ds=(t1s(100-i)-t2s(100-i)-t3s(100-i))*dz
+      dsagg=-t3s(100-i)*dz
+      dsdep=(t1s(100-i)-t2s(100-i))*dz
+
+c   Calc. of slope without aggregation:
+      sd(100-i)=sd(101-i)+dsxtl
+      s(100-i)=s(101-i)+ds ! 2nd level, all processes - use only
+c                           when skipping ventillation effects
+      sagg=s(101-i)+dsagg  ! 2nd level, aggregation only
+      sdep=s(101-i)+dsdep  ! 2nd level, diffusion only
+
+c   The following option allows one to bypass the treatment of ice
+c   particle ventillation effects, when nofv equals 1:
+      nofv=2
+      if(nofv.eq.1)then
+
+c   Calc. of dynamic & kinematic viscosity + diffusion coeff. for water:
+      vis=2.48e-6*(tk(100-i)**.754)
+      visk=vis/rhoa(100-i)
+      diff=0.185*((tk(100-i)/273.)**1.81)*(1013./p(100-i))
+c     Calculation of mean and maximum dimension for vapor
+c     deposition growth only.
+      dmxdep(100-i)=(2.*beta_Zx(100-i)+b1z+nu+0.67)/sd(100-i)
+      dmdep(100-i)=(nu+1.)/sd(100-i)
+
+      go to 300
+      endif
+c
+c    **************************************************************
+c     Calculation of slope with ventilation effects, described in
+c     Mitchell (1994, JAS, Vol. 51, p. 797), Part I.  Dmax = 'radar
+c     reflectivity flux' dimension, mmax is mass corresp. to dmax,
+c     visk=kinematic viscosity for air, diff=diffusion coeff. for 
+c     water vapor, sc=Schmidt No., re = Reynolds number,
+c     fv=ventilation coeff., mvent=m2max recalc. with ventilation
+c     effects (same wrt m4max & m3max).
+
+      dmax1=(beta_mx(101-i)+nu+0.67)/sd(101-i)
+      m1max=alpha_mx(101-i)*(dmax1**beta_mx(101-i))
+
+      dmax2=(beta_mx(100-i)+nu+0.67)/sd(100-i)
+      m2max=alpha_mx(100-i)*(dmax2**beta_mx(100-i))
+
+      dmax10=(beta_m(101-i)+nu+0.67)/s(101-i)
+      m10max=alpha_m(101-i)*(dmax10**beta_m(101-i))
+
+      dmax20=(beta_m(100-i)+nu+0.67)/sdep
+      m20max=alpha_m(100-i)*(dmax20**beta_m(100-i))
+
+      dmax_ag = (beta_m(100-i)+nu+0.67)/sagg
+      m_max_ag = alpha_m(100-i)*(dmax_ag**beta_m(100-i)) 
+
+      vis=2.48e-6*(tk(100-i)**.754)
+      visk=vis/rhoa(100-i)
+      diff=0.185*((tk(100-i)/273.)**1.81)*(1013./p(100-i))
+      sc=visk/diff
+
+c     Treatment for vapor deposition growth only:
+      dmaxd = dmax1
+      vmax=a1x*(dmaxd**b1x)
+
+c     Characteristic length for oblate aggregate shapes, with
+c     major/minor axis ratio of 3:1 (based on plate eqn. below):
+      cl=0.75*dmaxd
+
+c       Characteristic length for plate crystals (Jayaweera '71):
+c     cl=0.455*dmaxd*(1.+0.02526*(dmaxd**(-0.551)))
+      re=vmax*cl/visk
+      x=(sc**.3333)*(re**.5)
+      if(x.lt.1.)then
+      fv=1.+0.14*(x**2)
+      else
+      fv=0.86+0.28*x
+      endif
+c      if(igo2.eq.2)fv=fvmaxd
+
+c      if(i>20 .and. fv .gt. fv2) fv=fv2
+c      if(fv .gt. 2.) fv = 2.   !upper limit on ventilation
+
+      mvent=fv*(m2max-m1max)+m1max
+      if(mvent.le.0.0)mvent=m2max
+      dmax2=(mvent/alpha_mx(100-i))**(1./beta_mx(100-i))
+      sd(100-i)=(beta_mx(100-i)+nu+0.67)/dmax2
+
+c     Treat ventillation effects for aggregated snow:
+      dmax(101-i) = dmax10
+      vmax=a1f*(dmax(101-i)**b1f)
+
+c     Characteristic length for oblate aggregate shapes, with
+c     major/minor axis ratio of 3:1
+      cl=0.75*dmax(101-i)
+
+      re2=vmax*cl/visk
+      reratio=re2/remax
+
+      x=(sc**.3333)*(re2**.5)
+      if(x.lt.1.)then
+      fv2=1.+0.14*(x**2)
+      else
+      fv2=0.86+0.28*x
+      endif
+c      if(igo.eq.2)fv2=fvmax
+c      if(igo.eq.2)fv2=fvmax2
+       
+c      if(fv2 .lt. fv) fv2=fv
+c      if(fv2 .gt. 2.) fv2 = 2.  !upper limit on ventilation
+
+      m4max=fv2*(m20max-m10max)+m_max_ag !  m10max
+      if(m4max.le.0.0)m4max=m20max
+      dmax4=(m4max/alpha_m(100-i))**(1./beta_m(100-i))
+      s(100-i)=(beta_m(100-i)+nu+0.67)/dmax4
+c      s(100-i)=s(100-i)+dsagg
+c      if(s(100-i).gt.s(101-i))s(100-i)=s(101-i)
+
+c     Calculation of mean dimension and maximum dimension for
+c     vapor deposition growth only (scgs).
+      dmxdep(100-i)=dmax2
+      dmdep(100-i)=(nu+1.)/sd(100-i)
+
+ 300  continue
+
+c      write(*,110) z(100-i),s(100-i),sd(100-i),sdep,sagg,
+c     x    dmax1,m1max,dmax2,m2max,dmax10,m10max,dmax20,
+c     x    m20max,dmax_ag,m_max_ag,dmax2,dmax4,fv,fv2
+c 110  format(f7.1,18(f7.2))
+
+ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+ccccccccccccc          calculate dimensions of interest for iterative method            ccccccccccccc
+
+      dmean(100-i)=(nu+1.)/s(100-i)		   !MEAN DIMENSION
+      D_N(100-i)=(nu+1.)/s(100-i)
+      D_Nx(100-i)=(nu+1.)/sd(100-i)
+      D_m(100-i)=(beta_m(100-i)+nu+0.67)/s(100-i)  !MEDIAN MASS DIMENSION
+      D_mx(100-i)=(beta_mx(100-i)+nu+0.67)/sd(100-i)
+      D_Z(100-i)=(2.*beta_Z(100-i)+nu+0.67)/s(100-i)
+      D_Zx(100-i)=(2.*beta_Zx(100-i)+nu+.67)/sd(100-i)	   ! Median radar  reflectivity dimension
+
+ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+
+c   Treatment of ice particle fallspeeds:
+      do k=1,6
+        if(k.eq.1)then
+        dtmp=D_m(100-i)
+        cctmp=alpha_m(100-i)
+        pptmp=beta_m(100-i)
+        aptmp=gamma_m(100-i)
+        bptmp=delta_m(100-i)
+
+        elseif(k.eq.2)then
+c       dtmp=dmaxd           ! alternate approach
+        dtmp=D_Zx(100-i)
+        cctmp=alpha_Zx(100-i)
+        pptmp=beta_Zx(100-i)
+        aptmp=gamma_Zx(100-i)
+        bptmp=delta_Zx(100-i)
+  
+        elseif(k.eq.3)then
+        dtmp=D_Z(100-i)            ! m**2 weighted size
+        cctmp=alpha_Z(100-i)
+        pptmp=beta_Z(100-i)
+        aptmp=gamma_Z(100-i)
+        bptmp=delta_Z(100-i)
+
+        elseif(k.eq.4)then
+        dtmp=D_mx(100-i)
+        cctmp=alpha_mx(100-i)
+        pptmp=beta_mx(100-i)
+        aptmp=gamma_mx(100-i)
+        bptmp=delta_mx(100-i)
+
+        elseif(k.eq.5)then
+        dtmp=D_N(100-i)
+        cctmp=alpha_N(100-i)
+        pptmp=beta_N(100-i)
+        aptmp=gamma_N(100-i)
+        bptmp=delta_N(100-i)
+
+        elseif(k.eq.6)then
+        dtmp=D_Nx(100-i)
+        cctmp=alpha_Nx(100-i)
+        pptmp=beta_Nx(100-i)
+        aptmp=gamma_Nx(100-i)
+        bptmp=delta_Nx(100-i)
+
+        endif
+
+c    Calc. Best number (unitless):
+      xx=(2.*cctmp*gg*rhoa(100-i)*(dtmp**(pptmp+2.-bptmp)))/
+     x    (aptmp*(vis**2))
+
+c    Determine flow regime constants:
+      if(xx.gt.1.56e5.and.xx.le.1.e8)then
+        if(k.eq.2.and.igo2.eq.1)then
+          fvmaxd=fv
+          igo2=2
+        elseif(k.eq.3.and.igo.eq.1)then
+          fvmax=fv
+c          fvmax2=fv2
+c          fvmax=fv2
+          igo=2
+        endif
+      endif
+
+c   Mitchell & hymsfield (2005) approach
+c     Calc. the drag terms  (a0.X^b0 for aggregation correction included):
+      ff=0.5*t2i*(xx**0.5)/
+     x (((1.+t2i*(xx**0.5))**0.5 - 1.)*((1.+t2i*(xx**0.5))**0.5))-
+     x a1*b1*(xx**b1)/(t1i*((1.+t2i*(xx**0.5))**0.5 - 1.)**2.)
+
+      ee=(t1i*(((1.+t2i*(xx**0.5))**0.5 - 1.)**2.)-a1*(xx**b1))/
+     x   (xx**ff) 
+
+
+c   Calc. prefactor and exponent, a1 & b1, of fallspeed power law (cgs):
+        if(k.eq.1)then
+
+c      regular approach (M96)
+      a1f=ee*visk*((2.*alpha_m(100-i)*gg)/(rhoa(100-i)*
+     x   (visk**2.)*gamma_m(100-i)))**ff
+
+      b1f=ff*(beta_m(100-i)+2.-delta_m(100-i))-1.
+
+      df(100-i)=(beta_m(100-i)+nu+b1f+0.67)/s(100-i)  !median mass-flux dimension (cm)
+
+c    Calc. mass-flux weighted fallspeed (cm/s):
+c      vf(100-i)=visk*renum/df(100-i)	! M96 approach
+      vf(100-i)=a1f*(df(100-i)**b1f)	! MH05 approach
+      if(mm.eq.6)then
+        vf(100-i)=0.5*vf(100-i)
+      endif
+
+c     cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+c     ccccccc      calc. fall velocity using Heymsfield and westbrook (2010) approach       cccccccccc
+c     cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+
+c     calc. mass for the dimension of interest (here, based on median mass-flux dimension)
+      mass_mf = alpha_m(100-i)*df(100-i)**beta_m(100-i)
+
+c     calc. area for the dimension of interest (here, based on median mass-flux dimension)
+      area_mf = gamma_m(100-i)*df(100-i)**delta_m(100-i)
+
+c     calc. area for ice sphere
+      area_sphere = (pi/4)*df(100-i)**2
+
+c     calc. area ratio for the dimension of interest (here, based on median mass-flux dimension)
+      a_ratio = area_mf/area_sphere
+
+      d_temp = df(100-i)
+
+c     calc. fall speed based on HW2010 approach
+      call Vcalc(d_temp,area_mf,mass_mf,a_ratio,vMH2,vHW2)
+      
+      vHW(100-i) = vHW2
+      vMH(100-i) = vMH2
+
+c      write(*,*) d_temp,area_mf,mass_mf,a_ratio!,vHW(100-i),vMH(100-i),vf(100-i)
+cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+
+
+        elseif(k.eq.2)then
+      a1zx=ee*visk*((2.*alpha_Zx(100-i)*gg)/(rhoa(100-i)*
+     x    (visk**2.)*gamma_Zx(100-i)))**ff
+
+      b1zx=ff*(beta_Zx(100-i)+2.-delta_Zx(100-i))-1.
+
+c    Calc. radar reflectivity flux dimension (cm):
+      dmaxd=(2.*beta_Zx(100-i)+b1zx+nu+0.67)/sd(100-i)
+
+        elseif(k.eq.3)then
+      a1z=ee*visk*((2.*alpha_Z(100-i)*gg)/(rhoa(100-i)*
+     x    (visk**2.)*gamma_Z(100-i)))**ff
+
+      b1z=ff*(beta_Z(100-i)+2.-delta_Z(100-i))-1.
+
+c    Calc. radar reflectivity flux dimension (cm):
+      dmax(100-i)=(2.*beta_Z(100-i)+b1z+nu+0.67)/s(100-i)
+
+        elseif(k.eq.4)then
+      a1x=ee*visk*((2.*alpha_mx(100-i)*gg)/(rhoa(100-i)*
+     x    (visk**2.)*gamma_mx(100-i)))**ff
+
+      b1x=ff*(beta_mx(100-i)+2.-delta_mx(100-i))-1.
+
+      dfxtl=(beta_mx(100-i)+nu+b1x+0.67)/sd(100-i)
+
+c      vfd=visk*renum/dfxtl
+      vfd=a1x*(dfxtl**b1x)
+      if(mm.eq.6)then
+        vfd=0.5*vfd
+      endif
+
+        elseif(k.eq.5)then
+      a1n=ee*visk*((2.*alpha_N(100-i)*gg)/(rhoa(100-i)*
+     x   (visk**2.)*gamma_N(100-i)))**ff
+
+      b1n=ff*(beta_N(100-i)+2.-delta_N(100-i))-1.
+
+        elseif(k.eq.6)then
+      a1nx=ee*visk*((2.*alpha_Nx(100-i)*gg)/(rhoa(100-i)*
+     x   (visk**2.)*gamma_Nx(100-i)))**ff
+
+      b1nx=ff*(beta_Nx(100-i)+2.-delta_Nx(100-i))-1
+
+        endif
+
+      enddo   ! enddo for k
+
+
+c   *********************************************************************************************
+c   Calc. IWC based on unaggregated snowfall:
+c     Note: Calc. of IWC & N can immediately preceed the ventilation
+c     section with virtually identical results.
+
+      iwcd(100-i)=alpha_mx(101-i)*gf(beta_mx(101-i)+nu+1.)*nxtl(100-i)/
+     x   (gf(nu+1.)*(sd(100-i)**beta_mx(101-i)))
+c      if (iwcd(100-i) .lt. iwcd(101-i)) iwcd(100-i) = iwcd(101-i)
+
+c   Calc. N for aggregated snowfall, using slope for aggregated
+c   snow and IWC for unaggregated snow:
+      if(z(100-i).ge.zbase)then
+      n(100-i)=gf(nu+1.)*iwcd(100-i)*(s(100-i)**beta_m(101-i))/
+     x   (alpha_m(101-i)*gf(beta_m(101-i)+nu+1.))
+c     else
+c     n(100-i)=n(ibase)
+c     nxtl(100-i)=nxtl(ibase)
+      endif
+
+c     For plotting, calc. N in #/liter wrt n & nxtl:
+      ng(100-i)=1000.*n(100-i)
+      nxg(100-i)=1000.*nxtl(100-i)
+
+
+c   Calc. of ice water content (g/cm**3) and snowfall rate 
+c   [r => g/(s cm**2); rg = mm/h].
+
+c      iwc(100-i)=c0(101-i)*gf(p2(101-i)+nu+1.)*n(100-i)/
+c     x   (gf(nu+1.)*(s(100-i)**p2(101-i)))
+
+      iwc(100-i)=alpha_m(101-i)*gf(beta_m(101-i)+nu+1.)*n(100-i)/
+     x   (gf(nu+1.)*(s(100-i)**beta_m(101-i)))
+
+c      r(100-i)=a1f*beta_m(101-i)*gf(beta_m(101-i)+b1f+nu+1.)
+c     x   *n(100-i)/(gf(nu+1.)*(s(100-i)**(beta_m(101-i)+b1f)))
+
+      r(100-i)=vf(100-i)*iwc(100-i)
+      rg(100-i)=r(100-i)/2.7777e-5   ! units = mm/h
+
+c     Repeat but for no aggregation:
+      rd=vfd*iwcd(100-i)
+      rgd(100-i)=rd/2.7777e-5   ! units = mm/h
+
+c     Calculate radar reflectivity profile:
+      zw=gf(2.*beta_Z(101-i)+nu+1.)*iwc(100-i)/
+     x   (alpha_Z(101-i)*gf(beta_Z(101-i)+nu+1.)*gratio*
+     x   (s(100-i)**beta_Z(101-i)))
+
+      zw=1.e12*zw  ! convert to conventional units of mm**6/m**3
+      dbzw(100-i)=10.*log10(zw)
+
+
+c   **************************************************************
+c     Calculation of aggregation efficiencies.
+      e(100-i)=e1
+c   *************************************************************
+
+c   Calculation of Dmean for exponential part of the size distribution,
+c   where D > 500 microns:
+      n0=n(100-i)*s(100-i)**(nu+1.)/gf(nu+1.)
+      nd1=(d1**nu)*n0*exp(-(s(100-i)*d1))
+      nd2=(d2**nu)*n0*exp(-(s(100-i)*d2))
+      slp=-(log(nd2)-log(nd1))/(d2-d1)
+      d500(100-i)=1./slp
+
+c   Calculate N for exponential part of the SD, where D > 0.5 mm:
+      lnn0=log(nd2)+slp*d2
+      n0500=exp(lnn0)
+      n500(100-i)=1.e3*n0500/slp  ! Given in #/liter
+      n0500 = n0500*1.e3
+
+
+      write(*,110) z(100-i),I0,I2,t3s(100-i),ee,ff,s(100-i),
+     x    beta_Zx(100-i),delta_Zx(100-i), alpha_m(100-i),
+     x    beta_m(100-i),b1z,b1n,b1f,b1zx,b1nx,fv,fv2
+ 110  format(f7.1,1x,2(f7.3,1x),f11.8,1x,14(f7.3,1x))
+
+c*******************************************************************
+c   Write height, IWC, mean size, and # conc. to output file: 
+
+c     Evaluate every cloud layer of variable depth (meters).
+        mout1=1.e6*iwc(100-i) ! Output in g/m3
+        dout1=1.e4*dmean(100-i) ! Output in microns
+        mout2=1.e6*iwcd(100-i)
+        dout2=1.e4*dmdep(100-i)
+        dout3=1.e4*d500(100-i)
+        tc=tk(101-i)-273.
+
+        write(3,105)z(100-i),mout1,dout1,dout2,ng(100-i),nxg(100-i),
+     x   vf(100-i),vHW(100-i),vMH(100-i),vfd,rg(100-i),rgd(100-i),
+     x   rhice(100-i),tc,dbzw(100-i),mout2,s(100-i)
+
+        write(4,106)z(100-i),mout1,dout1,dout2,dout3,ng(100-i),
+     x   nxg(100-i),n500(100-i),rhice(100-i),tc,dbzw(100-i),s(100-i),
+     x   slp,alpha_m(101-i),beta_m(101-i),D_m(100-i),D_N(100-i),
+     x   D_Z(100-i),n0500,gamma(100-i),delta_m(100-i)
+
+   2  CONTINUE
+      tkavg=tk(50)
+      stop
+      end
+c*************************************************************
+      function gf(xx)
+      real cof(6),xx
+      data cof/76.18009,-86.50532,24.01410,-1.231740,.1208580e-2,
+     +         -.536382e-5/
+      x=xx-1.
+      tmp=(x+5.5)**(x+0.5)*exp(-(x+5.5))*sqrt(6.283185)
+      ser=1.
+      do 1 i=1,6
+       x=x+1.
+       ser=ser+cof(i)/x
+1     continue
+      gf=tmp*ser
+      return
+      end
+***********************************************************************
+      SUBROUTINE INT(P2,B1,GAM4,I1)
+      IMPLICIT DOUBLE PRECISION (A-H,O-Z)
+      REAL*8 F(3),F2(3),DENOM(3),DENOM2(3),N,NF,NM,I1 
+      NM=1. 
+      I1=0.
+      X=0.5
+      DO 1 M=1,3
+      F(M)=0.
+      F2(M)=0.
+      N=1.
+      NF=N
+      K=1
+      A=1.
+      B=2.*P2+B1+4.
+      C=P2+NM+1.
+      C2=P2+B1+NM+1.
+      AA=A
+      BB=B
+      CC=C
+      CC2=C2
+      DO 2 J=1,20
+      F(M)=F(M)+(AA*BB/(CC*NF))*(X**K)
+      F2(M)=F2(M)+(AA*BB/(CC2*NF))*(X**K) 
+      AA=AA*(A+N)
+      BB=BB*(B+N)
+      CC=CC*(C+N)
+      CC2=CC2*(C2+N)
+      N=N+1.
+      NF=NF*N
+   2  K=K+1
+      IF(M.EQ.2)THEN
+      F(M)=2.*(F(M)+1.)
+      F2(M)=2.*(F2(M)+1.)
+      ELSE
+
+      F(M)=F(M)+1.
+      F2(M)=F2(M)+1.
+      ENDIF
+      DENOM(M)=P2+NM
+      DENOM2(M)=P2+B1+NM
+      NM=NM+1.
+   1  CONTINUE
+      DO 3 M=1,3
+   3  I1=I1+F(M)/DENOM(M)-F2(M)/DENOM2(M)
+      I1=GAM4*I1
+      RETURN
+      END
+
+
+c**********************************************************************
+      subroutine Vcalc(di,area,mass,aratio,vMH,vHW)
+
+c   Subroutine calculates the PSD median mass fall velocity for a
+c   temperature of -20 C and pressure of 500 hPa.
+
+c   Variables area and mass denote ice particle projected area and mass
+c   based on polynomial fit equations or a power law.
+c   All of these variables are based on synoptic cirrus with
+c   -40 < T < -10 C.  Similarly, aratio is the ratio of ice particle
+c   projected area to area of a circle having diameter = ice maximum
+c   dimension with particle projected area based on polynomial fit or
+c   it is based on the A-D power law.
+
+      real mass
+c     implicit real (a-h,o-v,x-z)
+
+c   Note: The ice particle dimension used in the Vt calculations is
+c   denoted di. It is passed to this subroutine from main program.
+
+      pi=4.0*atan(1.0)
+      rhoi=0.917        ! bulk density of ice
+c   Define gravitational accelleration
+c   and gas constant for air
+      g=981.
+      ra=2.867e6  !cgs unit
+c   Initialize pressure at 500 mb:
+      pmb=500.  ! units = mb
+c   Convert to dynes/cm2:
+      p0=1000.*pmb
+c   Temperature assumed at 500 mb level:
+      t0=273.-20.  ! deg. K
+      tk=t0      ! For fixed T-p assumption
+c   Mean lapse rate for upper troposphere:
+c     gamma=7.5e-5  ! deg./cm
+c   Estimate the atmospheric pressure:
+c     p=p0*(tk/t0)**(g/(ra*gamma))
+      p=p0       ! for fixed T-p assumption
+
+c   Coeffs. for governing eqn. via Bohm (1989)...
+      del=5.83 ! for ice particles
+      c0=0.6   ! for ice particles
+      t1i=(del**2)/4.
+      t2i=(1./t1i)*(1./(c0**0.5))
+c       For Heymsfield-Westbrook scheme:
+      delH=8.0
+      c0H=0.35
+
+c    Define correction terms for turbulence and aggregation:
+      a1=.0017  ! applied to aggregates
+      b1=0.8    ! applied to aggregates
+
+c   Calculate air density and dynamic & kinematic viscosity
+      rhoa=p/(ra*tk)
+      visc=2.48e-6*(tk**0.754)  ! dynamic viscosity
+      visk=visc/rhoa            ! kinematic viscosity
+
+c   Calculate fallspeeds for PSD bins based on Mitchell-Heyms. (2005, JAS):
+
+c     Calculation of Best number:
+      xx1=2.*mass*g*rhoa*di**2/(area*visc**2)
+
+c     Calc. the drag terms  (a0.X^b0 for aggregation correction included):
+      bb1=0.5*t2i*(xx1**0.5)/
+     x (((1.+t2i*(xx1**0.5))**0.5 - 1.)*((1.+t2i*(xx1**0.5))**0.5))-
+     x a1*b1*(xx1**b1)/(t1i*((1.+t2i*(xx1**0.5))**0.5 - 1.)**2.)
+
+      aa1=(t1i*(((1.+t2i*(xx1**0.5))**0.5 - 1.)**2.)-a1*(xx1**b1))/
+     x   (xx1**bb1)   
+c      aa1=(t1i*(((1.+t2i*(xx1**0.5))**0.5 - 1.)**2.))/
+c     x   (xx1**bb1)  ! (a0.X^b0 for aggregation correction NOT included):
+
+c     Calc. the Reynolds number:
+      Re=aa1*(xx1**bb1)
+
+c     Calc. fall velocity from Re using the Mitchell-Heymsfield scheme:
+      vMH=Re*visk/di
+
+c   Calculate V using the Heymsfield-Westbrook method (2010, JAS):
+c     Calc. the modified Best number for Heyms.-Westbrook method:
+      xxh=8.*mass*g*rhoa/(pi*(visc**2)*(aratio**0.5))
+
+c     Calc. Reynolds number:
+      ReH=(delH**2/4)*
+     x   ((1.+(4.*(xxh**0.5))/(delH**2*c0H**0.5))**0.5 - 1.)**2
+
+      vHW=ReH*visk/di  ! fallspeed using fixed or variable m-D/A-D terms
+
+      dummy=10.
+
+      return
+      end
+
+
+c**********************************************************************
+
+'EOF'
+gfortran -g -o hh hh.f
+gdb hh
