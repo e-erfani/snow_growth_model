@@ -11,5 +11,3 @@ The software is provided "as is", without warranty of any kind. In no event shal
 Mehdizadeh, G., Erfani, E., McDonough, F., Hosseinpour, F. E. (2024). Quantifying the Influence of Cloud Seeding on Ice Particle Growth and Snowfall Through Idealized Microphysical Modeling, Atmosphere, 15 (12), https://doi.org/10.3390/atmos15121460
 
 Erfani, E. (2016). A partial mechanistic understanding of North American Monsoon and microphysical properties of ice particles. University of Nevada-Reno: Ph.D. Dissertation, 229 pp, https://doi.org/10.13140/RG.2.2.26526.79685
-
-Erfani, E., Mitchell, D. L. (2024). Development of a Snow Growth Model for Rimed Snowfall, EarthArXiv, https://doi.org/10.31223/X5QM51
